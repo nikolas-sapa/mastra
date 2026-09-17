@@ -2640,6 +2640,10 @@ export class AgentThreadStreamRuntime {
     const activeRunId = () => {
       const runId = state.activeThreadRunIds.get(key);
       if (!runId) return null;
+      // An aborted run whose runtime still holds it in activeThreadRunIds must
+      // not be treated as active — its stream was cancelled, and replaying it
+      // would emit a duplicate agent_start and terminal lifecycle.
+      if (state.abortedRunIds.has(runId)) return null;
       const record = state.threadRunsById.get(runId);
       // No record yet means either a remote run (record never lives locally) or a local run
       // that sendSignal has reserved but has not yet registered via registerRun. Both are
@@ -3028,15 +3032,21 @@ export class AgentThreadStreamRuntime {
           remoteRuns.delete(eventStreamId);
           seenStreamIds.delete(eventStreamId);
         }
-        // When a run is aborted, cancel the current subscriber stream reader so
-        // the generator's inner loop unblocks and can yield the synthetic abort.
-        if (data.type === 'run-aborted' && activeReaderRunId === data.runId && currentReader) {
-          cancelledByAbort = true;
-          try {
-            void currentReader.cancel();
-          } catch {}
-        }
-        if (data.type !== 'run-suspended') {
+        // When a run is aborted, record it so activeRunId() returns null and
+        // replacement subscriptions cannot replay it. The stream reader is
+        // cancelled so the generator's inner loop unblocks.
+        if (data.type === 'run-aborted') {
+          state.abortedRunIds.add(data.runId);
+          if (activeReaderRunId === data.runId && currentReader) {
+            cancelledByAbort = true;
+            try {
+              void currentReader.cancel();
+            } catch {}
+          }
+          // An abort is not completion: the owner still needs to finish and
+          // drain pending signals before idle messages can start.
+          await this.#drainPendingSignals(state, resolvedPubSub, key, data.runId);
+        } else if (data.type !== 'run-suspended') {
           await this.#drainPendingIdleSignals(state, resolvedPubSub, key, data.runId);
         }
         wake();
