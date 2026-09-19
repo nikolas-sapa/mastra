@@ -1171,7 +1171,20 @@ function executeStreamWithFallbackModels<T>(
 
         lastError = err;
 
-        logger?.error(`Error executing model ${modelConfig.model.modelId}`, err);
+        // A failure that will fall through to another model in the chain is a
+        // recoverable failover, not a run failure: log it at `warn` and name the
+        // model being tried next. `error` is reserved for the terminal
+        // "Exhausted all fallback models." case below, so a log pipeline that
+        // alerts on level alone does not page on a blip the user never saw.
+        const nextModelConfig = models[index];
+        if (nextModelConfig) {
+          logger?.warn(
+            `Model ${modelConfig.model.modelId} failed, falling back to ${nextModelConfig.model.modelId}`,
+            err,
+          );
+        } else {
+          logger?.error(`Error executing model ${modelConfig.model.modelId}`, err);
+        }
       }
     }
     if (typeof finalResult === 'undefined') {
@@ -2011,17 +2024,23 @@ export function createLLMExecutionStep<TOOLS extends ToolSet = ToolSet, OUTPUT =
 
           const isUpstreamError = APICallError.isInstance(error);
 
+          // When another model in the chain will be tried (`!isLastModel`), this
+          // attempt is a recoverable failover: log at `warn` so it does not read
+          // as a run failure. `error` is reserved for the last model, matching
+          // the fallback loop's terminal "Exhausted all fallback models." record.
+          const logAttempt = isLastModel ? logger?.error?.bind(logger) : logger?.warn?.bind(logger);
+
           if (isUpstreamError) {
             const providerInfo = provider ? ` from ${provider}` : '';
             const modelInfo = modelIdStr ? ` (model: ${modelIdStr})` : '';
-            logger?.error(`Upstream LLM API error${providerInfo}${modelInfo}`, {
+            logAttempt?.(`Upstream LLM API error${providerInfo}${modelInfo}`, {
               error,
               runId,
               ...(provider && { provider }),
               ...(modelIdStr && { modelId: modelIdStr }),
             });
           } else {
-            logger?.error('Error in LLM execution', {
+            logAttempt?.('Error in LLM execution', {
               error,
               runId,
               ...(provider && { provider }),

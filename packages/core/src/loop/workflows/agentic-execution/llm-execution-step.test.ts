@@ -1823,6 +1823,81 @@ describe('createLLMExecutionStep gateway provider tools', () => {
     expect(firstModelStream).toHaveBeenCalledTimes(1);
   });
 
+  it('logs a recovered failover at warn, not error (#24441)', async () => {
+    // Primary throws, fallback answers: the run succeeds, so the failed attempt
+    // must be logged at `warn` (naming the next model) and never at `error`.
+    const primaryStream = vi.fn(async () => {
+      throw new APICallError({
+        message: 'primary blip',
+        url: 'https://primary.example.com/v1/messages',
+        requestBodyValues: {},
+        statusCode: 503,
+        isRetryable: true,
+      });
+    });
+    const fallbackStream = vi.fn(async () => ({
+      stream: convertArrayToReadableStream([
+        { type: 'response-metadata', id: 'resp-1', modelId: 'fallback-model', timestamp: new Date(0) },
+        { type: 'text-delta', textDelta: 'Recovered on fallback' },
+        { type: 'finish', finishReason: 'stop', usage: testUsage },
+      ]),
+      request: {},
+      response: { headers: undefined },
+      warnings: [],
+    }));
+
+    const logger = { error: vi.fn(), warn: vi.fn(), debug: vi.fn() };
+
+    const llmExecutionStep = createLLMExecutionStep({
+      agentId: 'test-agent',
+      messageId: 'msg-0',
+      runId: 'test-run',
+      startTimestamp: Date.now(),
+      methodType: 'stream',
+      controller,
+      outputWriter: vi.fn(),
+      messageList,
+      models: [
+        {
+          id: 'primary-model',
+          maxRetries: 0,
+          model: {
+            specificationVersion: 'v2' as const,
+            provider: 'mock-provider',
+            modelId: 'primary-model',
+            supportedUrls: {},
+            doGenerate: vi.fn(),
+            doStream: primaryStream,
+          } as any,
+        },
+        {
+          id: 'fallback-model',
+          maxRetries: 0,
+          model: {
+            specificationVersion: 'v2' as const,
+            provider: 'mock-provider',
+            modelId: 'fallback-model',
+            supportedUrls: {},
+            doGenerate: vi.fn(),
+            doStream: fallbackStream,
+          } as any,
+        },
+      ],
+      tools: {},
+      streamState: { serialize: vi.fn(), deserialize: vi.fn() },
+      _internal: { generateId: () => 'generated-id', threadId: 'thread-123', resourceId: 'resource-456' },
+      logger: logger as any,
+    } as unknown as OuterLLMRun<{}>);
+
+    await llmExecutionStep.execute(createExecuteParams(createIterationInput()));
+
+    expect(primaryStream).toHaveBeenCalledTimes(1);
+    expect(fallbackStream).toHaveBeenCalledTimes(1);
+    // The recovered attempt is a warning, never an error.
+    expect(logger.warn).toHaveBeenCalled();
+    expect(logger.error).not.toHaveBeenCalled();
+  });
+
   it('does not signal a processor retry when aborted during the retry delay', async () => {
     const abortController = new AbortController();
     const onAbort = vi.fn();
