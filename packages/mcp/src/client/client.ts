@@ -75,6 +75,19 @@ type MCPToolListEntry = Awaited<ReturnType<Client['listTools']>>['tools'][0];
 
 const DEFAULT_SERVER_CONNECT_TIMEOUT_MSEC = 3000;
 const JSON_SCHEMA_2020_12 = 'https://json-schema.org/draft/2020-12/schema';
+/**
+ * Legacy JSON Schema dialects that the validator has no registered meta-schema
+ * for (classic Ajv only knows draft-07, and the SDK special-cases 2020-12).
+ * zod v3's tool-schema output declares 2019-09, which otherwise makes every
+ * validation fail with `no schema with key or ref ".../2019-09/schema"`.
+ * The keywords MCP tool schemas actually use behave identically across these
+ * drafts, so normalizing the declared dialect is safe.
+ */
+const NORMALIZED_JSON_SCHEMA_DIALECTS = new Set([
+  'https://json-schema.org/draft/2019-09/schema',
+  'https://json-schema.org/draft/2019-09/schema#',
+  'https://json-schema.org/draft/2020-12/schema#',
+]);
 const MAX_JSON_SCHEMA_DEPTH = 128;
 const MAX_JSON_SCHEMA_NODES = 10_000;
 
@@ -145,9 +158,18 @@ function getJsonSchemaComplexityError(schema: unknown): string | undefined {
   return undefined;
 }
 
-/** MCP 2026-07-28 schemas default to JSON Schema 2020-12 when they declare no dialect. */
+/**
+ * MCP 2026-07-28 schemas default to JSON Schema 2020-12 when they declare no
+ * dialect. A schema that declares a legacy dialect the validator cannot resolve
+ * (notably zod v3's 2019-09 output) is normalized to 2020-12 as well, since the
+ * keywords tool schemas use are equivalent across those drafts.
+ */
 function withDefaultDialect(schema: JSONSchema7): JSONSchema7 {
-  return schema.$schema ? schema : { ...schema, $schema: JSON_SCHEMA_2020_12 };
+  if (!schema.$schema) return { ...schema, $schema: JSON_SCHEMA_2020_12 };
+  if (NORMALIZED_JSON_SCHEMA_DIALECTS.has(schema.$schema)) {
+    return { ...schema, $schema: JSON_SCHEMA_2020_12 };
+  }
+  return schema;
 }
 const DEFAULT_INSTRUCTIONS_MAX_LENGTH = 512;
 const DEFAULT_SERVER_LOG_LEVEL: LoggingLevel = 'info';

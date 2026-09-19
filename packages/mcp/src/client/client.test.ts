@@ -564,6 +564,45 @@ describe('MastraMCPClient - outputSchema without structuredContent', () => {
     expect(callTool).not.toHaveBeenCalled();
   });
 
+  it('normalizes a legacy 2019-09 dialect so tool calls are not rejected (zod v3 servers, #24403)', async () => {
+    const sdkClient = (client as any).client as Client;
+    vi.spyOn(sdkClient, 'listTools').mockResolvedValue({
+      tools: [
+        {
+          name: 'calculator',
+          inputSchema: {
+            // zod v3's MCP server output declares 2019-09, which the classic
+            // Ajv validator has no meta-schema for.
+            $schema: 'https://json-schema.org/draft/2019-09/schema#',
+            type: 'object' as const,
+            properties: {
+              a: { type: 'number' as const },
+              b: { type: 'number' as const },
+            },
+            required: ['a', 'b'],
+          },
+        },
+      ],
+    });
+    const callTool = vi.spyOn(sdkClient, 'callTool').mockResolvedValue({
+      content: [{ type: 'text', text: '3' }],
+      isError: false,
+    });
+
+    const tool = (await client.tools()).calculator;
+    // The declared dialect is upgraded to 2020-12 on the stored schema.
+    const stored = tool.inputSchema?.['~standard'].jsonSchema.input({ target: 'draft-2020-12' }) as {
+      $schema?: string;
+    };
+    expect(stored?.$schema).toBe('https://json-schema.org/draft/2020-12/schema');
+
+    // A valid payload passes validation and reaches the server instead of
+    // being rejected with "no schema with key or ref .../2019-09/schema".
+    const result = await tool.execute?.({ a: 1, b: 2 });
+    expect(result).not.toMatchObject({ error: true });
+    expect(callTool).toHaveBeenCalled();
+  });
+
   it('bounds nested input subschemas before compiling them', async () => {
     const sdkClient = (client as any).client as Client;
     let nestedSchema: Record<string, unknown> = { type: 'string' };
