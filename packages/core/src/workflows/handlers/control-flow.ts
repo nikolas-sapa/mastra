@@ -197,7 +197,7 @@ export async function executeParallel(
       makeStepRunning = timeTravel.steps[0] === stepId;
     }
     if (!makeStepRunning) {
-      break;
+      continue;
     }
     const startTime = resume?.steps[0] === stepId ? undefined : Date.now();
     const resumeTime = resume?.steps[0] === stepId ? Date.now() : undefined;
